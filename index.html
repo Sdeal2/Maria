@@ -92,6 +92,12 @@ button:focus-visible,select:focus-visible,input:focus-visible,textarea:focus-vis
 .sheet button{border-radius:12px;border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:12px;font-size:15px;font-family:inherit}
 .sheet button.primary{background:var(--glow);color:#032a2a;border-color:var(--glow);font-weight:700}
 .note{font-size:13px;color:var(--dim);line-height:1.5;margin:0}
+
+/* AI workspace: live web search, charts and image generation */
+.workspace{border:1px solid var(--line);background:rgba(13,34,48,.88);border-radius:16px;padding:12px;margin:4px 0 10px;display:flex;flex-direction:column;gap:10px}
+.workspace h2{font-size:16px;margin:0}.tabs{display:flex;gap:6px}.tabs button,.work-actions button{flex:1;border:1px solid var(--line);border-radius:11px;background:var(--panel);color:var(--ink);padding:10px 6px;font:inherit;font-size:13px}.tabs button.active,.work-actions button.primary{background:var(--glow);color:#032a2a;border-color:var(--glow);font-weight:700}
+#workPrompt{width:100%;min-height:76px;resize:vertical;border:1px solid var(--line);border-radius:12px;background:#071923;color:var(--ink);padding:11px;font:inherit;font-size:14px}
+.work-actions{display:flex;gap:7px}.work-actions button{font-size:14px}.work-note{font-size:12px;color:var(--dim);line-height:1.4;margin:0}.work-output{display:flex;flex-direction:column;gap:8px;max-height:360px;overflow:auto;font-size:14px;line-height:1.5;white-space:pre-wrap}.work-output a{color:var(--glow);overflow-wrap:anywhere}.work-output img{max-width:100%;border-radius:12px;border:1px solid var(--line)}.chart-wrap{background:#f7fafc;border-radius:12px;padding:8px}.chart-wrap canvas{width:100%;height:220px;display:block}
 </style>
 </head>
 <body>
@@ -169,6 +175,19 @@ button:focus-visible,select:focus-visible,input:focus-visible,textarea:focus-vis
 </section>
 
 <section id="log" aria-live="polite"><div class="empty" id="empty">Your conversation will show up here.<br>Earphones give the best sound.</div></section>
+
+<section class="workspace" aria-label="AI tools">
+  <h2>AI Studio</h2>
+  <div class="tabs" role="tablist">
+    <button type="button" class="active" data-mode="search">Web Search</button>
+    <button type="button" data-mode="chart">Chart</button>
+    <button type="button" data-mode="image">Image</button>
+  </div>
+  <textarea id="workPrompt" placeholder="Ask anything… e.g. आज की AI की ताज़ा खबरें खोजो"></textarea>
+  <div class="work-actions"><button type="button" id="runWork" class="primary">Search the web</button><button type="button" id="clearWork">Clear</button></div>
+  <p class="work-note" id="workHint">Google Search से ताज़ा जानकारी मिलेगी; उपलब्ध होने पर स्रोत लिंक भी दिखेंगे।</p>
+  <div id="workOutput" class="work-output" aria-live="polite"></div>
+</section>
 
 <section class="controls">
   <button id="micBtn" class="off" disabled>Mic</button>
@@ -324,7 +343,7 @@ function systemText(){
 }
 
 /* ---------- websocket ---------- */
-const TOOLS = [{ functionDeclarations: [
+const TOOLS = [{ googleSearch: {} }, { functionDeclarations: [
   { name: "send_whatsapp",
     description: "Prepare a WhatsApp message to one of the user's saved contacts (or a phone number the user gave). The user taps a button on screen to open WhatsApp and press send. Only use when the user clearly asks you to message someone.",
     parameters: { type: "OBJECT", properties: {
@@ -682,6 +701,76 @@ document.addEventListener("visibilitychange", async () => {
     try{ if(navigator.wakeLock) wakeLock = await navigator.wakeLock.request("screen"); }catch(e){}
   }
 });
+
+/* ---------- web search, charts and image generation ---------- */
+let workMode = "search";
+const WORK_MODE = {
+  search: {button:"Search the web", hint:"Google Search से ताज़ा जानकारी मिलेगी; उपलब्ध होने पर स्रोत लिंक भी दिखेंगे।", placeholder:"आज की AI की ताज़ा खबरें खोजो"},
+  chart: {button:"Create chart", hint:"डेटा/विषय लिखें। AI चार्ट के लिए लेबल और मान तैयार करेगा।", placeholder:"2020 से 2025 तक भारत की जनसंख्या का चार्ट बनाओ (अनुमानित डेटा चलेगा)"},
+  image: {button:"Generate image", hint:"2D, 3D, photorealistic या quantum-inspired इमेज का विवरण लिखें। इमेज जनरेशन API उपलब्धता/बिलिंग पर निर्भर है।", placeholder:"एक glowing quantum particle universe, 3D cinematic render"}
+};
+function workStatus(t){ $("workOutput").textContent=t; }
+document.querySelectorAll("[data-mode]").forEach(b=>b.addEventListener("click",()=>{
+  workMode=b.dataset.mode;
+  document.querySelectorAll("[data-mode]").forEach(x=>x.classList.toggle("active",x===b));
+  $("runWork").textContent=WORK_MODE[workMode].button;
+  $("workHint").textContent=WORK_MODE[workMode].hint;
+  $("workPrompt").placeholder=WORK_MODE[workMode].placeholder;
+  $("workOutput").innerHTML="";
+}));
+$("clearWork").onclick=()=>{$("workPrompt").value="";$("workOutput").innerHTML="";};
+function responseText(data){
+  return (data.candidates?.[0]?.content?.parts||[]).filter(p=>p.text).map(p=>p.text).join("\n");
+}
+function apiError(data){return data.error?.message || "API request failed. API key, model access, quota और internet connection जाँचें.";}
+async function runWebSearch(prompt){
+  const url=`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${encodeURIComponent(cfg.key())}`;
+  const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({contents:[{parts:[{text:prompt}]}],tools:[{google_search:{}}]})});
+  const data=await r.json();if(!r.ok)throw new Error(apiError(data));
+  const out=$("workOutput");out.innerHTML="";
+  const answer=document.createElement("div");answer.textContent=responseText(data)||"कोई टेक्स्ट जवाब नहीं मिला।";out.appendChild(answer);
+  const chunks=data.candidates?.[0]?.groundingMetadata?.groundingChunks||[];
+  const sources=[...new Map(chunks.map(c=>c.web).filter(w=>w?.uri).map(w=>[w.uri,w])).values()];
+  if(sources.length){const h=document.createElement("strong");h.textContent="Sources";out.appendChild(h);sources.forEach(w=>{const a=document.createElement("a");a.href=w.uri;a.target="_blank";a.rel="noopener noreferrer";a.textContent=w.title||w.uri;out.appendChild(a);});}
+}
+async function runChart(prompt){
+  const url=`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${encodeURIComponent(cfg.key())}`;
+  const body={contents:[{parts:[{text:"Create chart data for this request. Return ONLY valid JSON with keys title, labels (array of strings), datasets (array of objects with label and values numeric array). Keep labels and each values array the same length. If user gives no data, use clearly illustrative estimates and mention that in title or explanation. Request: "+prompt}]}],generationConfig:{responseMimeType:"application/json"}};
+  const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});const data=await r.json();if(!r.ok)throw new Error(apiError(data));
+  let obj;try{obj=JSON.parse(responseText(data).replace(/^```(?:json)?\s*|\s*```$/g,""));}catch(e){throw new Error("चार्ट डेटा JSON में नहीं मिला। कृपया विषय को थोड़ा स्पष्ट लिखें।");}
+  if(!Array.isArray(obj.labels)||!Array.isArray(obj.datasets)||!obj.datasets.length)throw new Error("AI ने वैध chart data नहीं लौटाया।");
+  const out=$("workOutput");out.innerHTML="";const h=document.createElement("strong");h.textContent=obj.title||"Your chart";out.appendChild(h);
+  const wrap=document.createElement("div");wrap.className="chart-wrap";const canvas=document.createElement("canvas");canvas.width=900;canvas.height=420;wrap.appendChild(canvas);out.appendChild(wrap);
+  const ctx=canvas.getContext("2d"),W=canvas.width,H=canvas.height,pad={l:65,r:25,t:30,b:65};
+  const vals=obj.datasets.flatMap(d=>d.values.map(Number)).filter(Number.isFinite);const max=Math.max(1,...vals)*1.12;const n=obj.labels.length;const colors=["#087f8c","#e07a32","#725ac1","#2b9b68"];
+  ctx.fillStyle="#172b35";ctx.font="18px sans-serif";ctx.textAlign="right";
+  for(let i=0;i<=4;i++){let y=H-pad.b-(H-pad.t-pad.b)*i/4;ctx.strokeStyle="#d7e0e5";ctx.beginPath();ctx.moveTo(pad.l,y);ctx.lineTo(W-pad.r,y);ctx.stroke();ctx.fillText((max*i/4).toFixed(0),pad.l-10,y+6);}
+  const group=(W-pad.l-pad.r)/Math.max(1,n),barW=Math.min(42,group*.72/obj.datasets.length);
+  obj.datasets.forEach((d,di)=>{d.values.forEach((v,i)=>{v=Number(v);if(!Number.isFinite(v))return;const x=pad.l+i*group+group/2-(obj.datasets.length*barW)/2+di*barW;const bh=(H-pad.t-pad.b)*v/max;ctx.fillStyle=colors[di%colors.length];ctx.fillRect(x,H-pad.b-bh,barW-3,bh);});});
+  ctx.fillStyle="#172b35";ctx.font="14px sans-serif";ctx.textAlign="center";obj.labels.forEach((lab,i)=>ctx.fillText(String(lab).slice(0,16),pad.l+i*group+group/2,H-pad.b+25));
+  const legend=document.createElement("div");legend.style.cssText="display:flex;gap:12px;flex-wrap:wrap;color:#172b35;font-size:12px";obj.datasets.forEach((d,i)=>{const s=document.createElement("span");s.textContent="■ "+d.label;s.style.color=colors[i%colors.length];legend.appendChild(s);});wrap.appendChild(legend);
+  const note=document.createElement("p");note.textContent="नोट: AI द्वारा बनाए गए अनुमानित डेटा को वास्तविक आँकड़े न मानें; स्रोत/डेटा दिए जाने पर चार्ट अधिक सटीक बनेगा।";out.appendChild(note);
+}
+async function runImage(prompt){
+  const url=`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image:generateContent?key=${encodeURIComponent(cfg.key())}`;
+  const fullPrompt="Create a high-quality original image. Visual style: "+prompt+". If requested, render as a detailed 2D illustration, 3D cinematic render, or quantum-inspired visualization. Do not just describe the image; generate it.";
+  const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({contents:[{parts:[{text:fullPrompt}]}],generationConfig:{responseModalities:["TEXT","IMAGE"]}})});
+  const data=await r.json();if(!r.ok)throw new Error(apiError(data));
+  const out=$("workOutput");out.innerHTML="";let found=false;
+  for(const part of (data.candidates?.[0]?.content?.parts||[])){
+    if(part.text){const p=document.createElement("p");p.textContent=part.text;out.appendChild(p);}
+    if(part.inlineData?.data){const img=document.createElement("img");img.alt="AI generated image";img.src=`data:${part.inlineData.mimeType||"image/png"};base64,${part.inlineData.data}`;out.appendChild(img);found=true;}
+  }
+  if(!found)throw new Error("मॉडल ने इमेज नहीं लौटाई। API में image model access और billing जाँचें।");
+}
+$("runWork").onclick=async()=>{
+  const prompt=$("workPrompt").value.trim();if(!prompt){workStatus("पहले अपना सवाल या इमेज का विवरण लिखें।");return;}
+  if(!cfg.key()){workStatus("पहले Settings में Gemini API key डालें।");return;}
+  $("runWork").disabled=true;workStatus("काम हो रहा है…");
+  try{if(workMode==="search")await runWebSearch(prompt);else if(workMode==="chart" && /image|picture|photo|illustrat|इमेज|तस्वीर|फोटो|चित्र|बनाओ.*(3d|2d)|generate.*image/i.test(prompt))await runImage(prompt);else if(workMode==="chart")await runChart(prompt);else await runImage(prompt);}
+  catch(e){workStatus("Error: "+(e.message||e));}
+  finally{$("runWork").disabled=false;}
+};
 
 /* ---------- settings ---------- */
 function openSettings(){
