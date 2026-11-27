@@ -154,6 +154,12 @@ button:focus-visible,select:focus-visible,input:focus-visible,textarea:focus-vis
 .sheet button{border-radius:12px;border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:12px;font-size:15px;font-family:inherit}
 .sheet button.primary{background:var(--glow);color:#032a2a;border-color:var(--glow);font-weight:700}
 .note{font-size:13px;color:var(--dim);line-height:1.5;margin:0}
+.player iframe{width:100%;aspect-ratio:16/9;border:0;border-radius:10px;background:#000}
+.act input{background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:12px;padding:12px;font-size:16px;font-family:inherit;width:100%}
+.act .row2{display:flex;gap:8px}
+.act .row2 button{flex:1;border-radius:12px;border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:12px;font-size:15px;font-family:inherit}
+.act .row2 button.dng{background:var(--warn);border-color:var(--warn);color:#fff;font-weight:700}
+.act .msg{font-size:13px;color:#ffb3ba}
 </style>
 </head>
 <body>
@@ -316,10 +322,32 @@ button:focus-visible,select:focus-visible,input:focus-visible,textarea:focus-vis
       <input id="imgModel" type="text">
     </label>
     <p class="note">If the connection fails, copy the current Live model name from the Live page in AI Studio and paste it here.</p>
+    <label>YouTube API key (optional, finds songs more reliably)
+      <input id="ytKey" type="password" autocomplete="off" placeholder="AIza...">
+    </label>
+    <p class="note">Songs are found without a key too, but the free search servers can be down. A free YouTube Data API key from Google Cloud Console is more reliable.</p>
+    <label>Secret code to delete her memory
+      <input id="memCode" type="password" autocomplete="new-password" placeholder="Type a new code to set or change it">
+    </label>
+    <p class="note" id="codeNote"></p>
+    <p class="note">The AI never sees this code. When you ask her to delete her memory, a box appears on screen and you type the code yourself.</p>
     <div class="row">
       <button id="clearMem">Clear memory</button>
       <button id="resetPersona">Reset prompt</button>
     </div>
+    <label>Voice lock (sirf aapki awaaz)
+      <select id="spkOn"><option value="0">Off</option><option value="1">On</option></select>
+    </label>
+    <label>Sensitivity: <span id="spkSensV"></span>
+      <input id="spkSens" type="range" min="1" max="5" step="1">
+    </label>
+    <div class="row">
+      <button id="spkEnroll">Record my voice</button>
+      <button id="spkTest">Test lock</button>
+      <button id="spkClear">Remove</button>
+    </div>
+    <p class="note" id="spkNote"></p>
+    <p class="note">Voice lock sirf record ki hui awaaz se milti awaaz ko AI tak jaane deta hai. Dusre log tabhi bol payenge jab aap khud bologe "guest mode on" (5 min baad apne aap band).</p>
     <button class="primary" id="saveSettings">Save</button>
   </div>
 </div>
@@ -355,7 +383,10 @@ const cfg = {
   imgSource: () => store.get("imgSource", "free"),
   search: () => store.get("search", "1"),
   persona: () => store.get("persona4", DEFAULT_PERSONA),
-  born:  () => store.get("born", "")
+  born:  () => store.get("born", ""),
+  ytKey: () => store.get("ytKey", ""),
+  spkOn: () => store.get("spkOn", "0"),
+  spkSens: () => Number(store.get("spkSens", "3"))
 };
 
 const WS_BASE = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=";
@@ -372,9 +403,10 @@ let lines = [], savedIdx = 0, memory = [];
 let wakeLock = null;
 let lastAct = 0, lastNudge = 0, nudgeN = 0, nudgeTimer = null;
 let lastInner = 0, sessionStart = 0, greeted = false, topicN = 0;
+let postTurn = null, skipSave = false, codeFails = 0, songEl = null, songMuted = false, codeCard = null;
 
 /* ---------- ui helpers ---------- */
-const VERSION = "v9";
+const VERSION = "v10";
 function searchActive(){ return cfg.search() === "1" && [0, 1, 3, 4].includes(workingLevel); }
 function toolsMode(){
   return searchActive() ? "search + actions" : workingLevel === 6 ? "voice only" : "actions only";
@@ -441,6 +473,7 @@ function systemText(){
   if(cfg.user()) t += "\n\nThe user's name is " + cfg.user() + ". Use it now and then, naturally.";
   const names = parseContacts().map(c => c.name);
   t += "\n\nYou can do small tasks for the user with your tools: send_whatsapp, make_call and generate_image, and you can search Google in real time. Search whenever an answer could be recent or changing (news, weather, scores, prices, timings) or the user asks you to check. For generate_image, write the prompt in English, detailed and vivid, and tell the user in one short sentence that the picture is on screen. Saved contacts: " + (names.length ? names.join(", ") : "none yet") + ". Use a tool only when the user clearly asks, never on your own, and never to contact anyone for yourself. For a message, write it in the language and tone the user wants and keep their meaning. If the name is unclear or not saved, ask the user which contact or number. You cannot press send or dial yourself: after the tool runs, tell the user in one short sentence that it is ready and they should tap the button on screen.";
+  t += "\n\nMore tools: play_song plays a song from YouTube on the user's screen (use it when the user asks for a song or gaana; once it plays, say at most one short sentence and then stay quiet, the microphone is muted while the song plays). stop_song stops it. guest_mode lets other people talk to you for a few minutes only when the owner asks (the app locks your hearing to the owner voice otherwise). shutdown_app closes you when the user clearly says to shut down or turn off. delete_memory deletes your memory of past conversations when the user clearly asks you to delete your memory or yourself: a box appears on screen where the user types a secret code. You do not know that code. Never guess it, never ask the user to say it aloud, never hint at it. If the user will not enter it, accept that gracefully and do not pressure them.";
   if(memory.length){
     const notes = memory.map(m => (m.who === "user" ? "User: " : cfg.name() + ": ") + m.text).join("\n").slice(-2500);
     t += "\n\nNotes from earlier conversations (context only, do not repeat them back):\n" + notes;
@@ -465,7 +498,21 @@ const FN = [
     description: "Create a picture from a text description and show it on the user's screen. Use when the user asks you to draw, make, design or generate an image or picture.",
     parameters: { type: "OBJECT", properties: {
       prompt: { type: "STRING", description: "A detailed, vivid description of the image, written in English." } },
-      required: ["prompt"] } }
+      required: ["prompt"] } },
+  { name: "play_song",
+    description: "Find a song on YouTube and play it on the user's screen. Use when the user asks you to play a song, gaana or music. Put the song name and the artist (if known) in the query.",
+    parameters: { type: "OBJECT", properties: {
+      query: { type: "STRING", description: "Song name and artist, for example 'Tum hi ho Arijit Singh'." } },
+      required: ["query"] } },
+  { name: "stop_song",
+    description: "Stop the song that is currently playing and close the player. Use when the user asks you to stop or turn off the song." },
+  { name: "guest_mode",
+    description: "Turn guest mode on or off. Use only when the user (the locked owner voice) clearly says someone else will talk to you now (guest mode on) or that guest talk is over (guest mode off). While on, other people's voices are heard too, and it ends by itself after a few minutes.",
+    parameters: { type: "OBJECT", properties: { on: { type: "BOOLEAN", description: "true to let other voices talk, false to go back to the owner's voice only." }, minutes: { type: "NUMBER", description: "How long guest mode lasts, 1 to 15. Default 5." } }, required: ["on"] } },
+  { name: "shutdown_app",
+    description: "Shut yourself down and close the session. Use only when the user clearly tells you to shut down, turn off, go to sleep or close yourself. Say one short goodbye after calling." },
+  { name: "delete_memory",
+    description: "Delete all your saved memory of past conversations. Use only when the user clearly asks you to delete your memory or delete yourself. This shows a box on the user's screen where they type a secret code themselves. You do not know the code and can never find it out." }
 ];
 const TOOLS_ALL = [{ functionDeclarations: FN }, { googleSearch: {} }];
 const TOOLS_FN = [{ functionDeclarations: FN }];
@@ -564,7 +611,11 @@ function onServer(m, level){
   }
   if(sc.inputTranscription && sc.inputTranscription.text){ addText("user", sc.inputTranscription.text); lastAct = Date.now(); }
   if(sc.outputTranscription && sc.outputTranscription.text) addText("ai", sc.outputTranscription.text);
-  if(sc.turnComplete){ saveMemory(); lastAct = Date.now(); }
+  if(sc.turnComplete){
+    if(skipSave){ skipSave = false; savedIdx = lines.length; } else saveMemory();
+    lastAct = Date.now();
+    if(postTurn && postTurn.spoke){ const k = postTurn.kind; postTurn = null; afterSpeech(k === "shutdown" ? doShutdown : freshSession); }
+  }
 }
 
 function send(obj){ if(ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
@@ -702,6 +753,134 @@ function addImage(prompt, r){
   $("log").appendChild(box); $("log").scrollTop = $("log").scrollHeight;
   lines.push({ who: "act", text: "", el: box });
 }
+/* ---------- songs, shutdown, secure memory delete ---------- */
+function afterSpeech(fn){
+  const t0 = Date.now();
+  const iv = setInterval(() => {
+    if((!playing.size && Date.now() - t0 > 1200) || Date.now() - t0 > 15000){ clearInterval(iv); fn(); }
+  }, 300);
+}
+function armPost(kind, ms){
+  const mine = postTurn = { kind, spoke: false };
+  setTimeout(() => { if(postTurn === mine){ postTurn = null; afterSpeech(kind === "shutdown" ? doShutdown : freshSession); } }, ms);
+}
+function doShutdown(){ if(running) stop("Shut down. Tap START AI to wake her."); }
+function freshSession(){
+  if(!running || !ws) return;
+  const old = ws; ready = false; resumeHandle = null;
+  connect(workingLevel);
+  try{ old.close(); }catch(e){}
+}
+function tellAI(t){ send({ realtimeInput: { text: "[Note from the app, not spoken by the user: " + t + "]" } }); }
+function withTimeout(p, ms){ return Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), ms))]); }
+async function getJson(url, ms){
+  const r = await withTimeout(fetch(url), ms);
+  if(!r.ok) throw new Error("HTTP " + r.status);
+  return r.json();
+}
+async function findVideo(q){
+  const e = encodeURIComponent(q), tries = [];
+  if(cfg.ytKey()){
+    tries.push(getJson("https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&videoEmbeddable=true&maxResults=1&q=" + e + "&key=" + encodeURIComponent(cfg.ytKey()), 7000).then(j => {
+      const it = j.items && j.items[0]; if(!it || !it.id || !it.id.videoId) throw new Error("none");
+      return { id: it.id.videoId, title: it.snippet.title };
+    }));
+  }
+  ["https://pipedapi.kavin.rocks", "https://api.piped.private.coffee", "https://pipedapi.adminforge.de"].forEach(b => {
+    tries.push(getJson(b + "/search?q=" + e + "&filter=videos", 7000).then(j => {
+      const it = (j.items || []).find(x => x.url && x.url.includes("v=")); if(!it) throw new Error("none");
+      return { id: it.url.split("v=")[1].split("&")[0], title: it.title || q };
+    }));
+  });
+  ["https://inv.nadeko.net", "https://yewtu.be"].forEach(b => {
+    tries.push(getJson(b + "/api/v1/search?q=" + e + "&type=video", 7000).then(j => {
+      const it = (Array.isArray(j) ? j : []).find(x => x.videoId); if(!it) throw new Error("none");
+      return { id: it.videoId, title: it.title || q };
+    }));
+  });
+  try{ return await Promise.any(tries); }catch(err){ return null; }
+}
+function removeSongEl(){ if(songEl){ songEl.remove(); songEl = null; } }
+function removeSong(restoreMic){
+  removeSongEl();
+  if(songMuted){ songMuted = false; if(restoreMic && running){ micOn = true; toggleBtn($("micBtn"), true); } }
+}
+function addSong(v){
+  removeSongEl();
+  if($("empty")) $("empty").remove();
+  const box = document.createElement("div"); box.className = "act player";
+  const t = document.createElement("div"); t.textContent = "Playing: " + v.title; box.appendChild(t);
+  const f = document.createElement("iframe");
+  f.src = "https://www.youtube.com/embed/" + v.id + "?autoplay=1&playsinline=1&rel=0";
+  f.allow = "autoplay; encrypted-media; picture-in-picture; fullscreen"; f.title = v.title;
+  box.appendChild(f);
+  const a = document.createElement("a"); a.className = "actbtn"; a.textContent = "Open in YouTube";
+  a.href = "https://www.youtube.com/watch?v=" + v.id; a.target = "_blank"; a.rel = "noopener"; box.appendChild(a);
+  const row = document.createElement("div"); row.className = "row2";
+  const x = document.createElement("button"); x.textContent = "Stop song"; x.onclick = () => removeSong(true);
+  row.appendChild(x); box.appendChild(row);
+  $("log").appendChild(box); $("log").scrollTop = $("log").scrollHeight;
+  lines.push({ who: "act", text: "", el: box });
+  songEl = box;
+  if(micOn){
+    micOn = false; songMuted = true; toggleBtn($("micBtn"), false);
+    send({ realtimeInput: { audioStreamEnd: true } });
+    setStatus("Song playing. Tap the mic when you want to talk.");
+  }
+}
+async function hashCode(c){
+  const s = "maria-salt:" + String(c).trim();
+  try{
+    if(window.crypto && crypto.subtle){
+      const b = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+      return "s:" + Array.from(new Uint8Array(b)).map(x => x.toString(16).padStart(2, "0")).join("");
+    }
+  }catch(e){}
+  let h = 5381; for(let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+  return "f:" + (h >>> 0).toString(16);
+}
+function wipeMemory(){
+  memory = []; store.set("memory", "[]");
+  lines = []; savedIdx = 0; skipSave = true;
+  updateNodes();
+}
+function removeCodeCard(){ if(codeCard){ codeCard.remove(); codeCard = null; } }
+function addCodeCard(){
+  removeCodeCard();
+  if($("empty")) $("empty").remove();
+  const box = document.createElement("div"); box.className = "act";
+  const t = document.createElement("div"); t.textContent = "To delete her memory, type your secret code here. She cannot see it."; box.appendChild(t);
+  const inp = document.createElement("input"); inp.type = "password"; inp.autocomplete = "off"; inp.placeholder = "Secret code"; box.appendChild(inp);
+  const msg = document.createElement("div"); msg.className = "msg"; box.appendChild(msg);
+  const row = document.createElement("div"); row.className = "row2";
+  const ok = document.createElement("button"); ok.className = "dng"; ok.textContent = "Delete memory";
+  const no = document.createElement("button"); no.textContent = "Cancel";
+  row.appendChild(ok); row.appendChild(no); box.appendChild(row);
+  ok.onclick = async () => {
+    if(codeFails >= 3){ msg.textContent = "Locked. Restart the app to try again."; return; }
+    const good = (await hashCode(inp.value)) === store.get("memCodeHash", "");
+    inp.value = "";
+    if(good){
+      codeFails = 0; wipeMemory(); removeCodeCard();
+      tellAI("the user typed the correct code and ALL your memory of past conversations has been deleted. You now remember nothing about earlier chats. Confirm this in one short sentence, in Hindi.");
+      armPost("fresh", 20000);
+    }else{
+      codeFails++;
+      if(codeFails >= 3){
+        msg.textContent = "Wrong code. Locked until the app restarts."; ok.disabled = true;
+        tellAI("the user typed a wrong code 3 times, so memory deletion is locked until the app restarts. Tell them gently in one short sentence, in Hindi.");
+      }else msg.textContent = "Wrong code. Try again (" + (3 - codeFails) + " left).";
+    }
+  };
+  no.onclick = () => {
+    removeCodeCard();
+    tellAI("the user cancelled deleting your memory. Acknowledge in one short sentence, in Hindi, without pressuring them.");
+  };
+  $("log").appendChild(box); $("log").scrollTop = $("log").scrollHeight;
+  lines.push({ who: "act", text: "", el: box });
+  codeCard = box;
+  setTimeout(() => { try{ inp.focus(); }catch(e){} }, 100);
+}
 async function handleToolCalls(calls){
   const responses = await Promise.all(calls.map(async c => {
     const a = c.args || {}; let result;
@@ -730,6 +909,38 @@ async function handleToolCalls(calls){
           addAction("Call " + who.name, "Call " + who.name, "tel:+" + who.digits, false);
           result = "Prepared. The user must tap the button on screen to place the call. Tell them in one short sentence.";
         }
+      }else if(c.name === "play_song"){
+        const q = String(a.query || "").trim();
+        if(!q){ result = "The song name was empty. Ask the user which song."; }
+        else{
+          setStatus("Finding song...");
+          const v = await findVideo(q);
+          if(v && /^[\w-]{11}$/.test(v.id)){
+            addSong(v);
+            result = "The song is now playing on screen. Say one very short sentence, then stay quiet. The microphone is muted while the song plays and the user taps the mic to talk again.";
+          }else{
+            addAction("Song: " + q, "Search on YouTube", "https://www.youtube.com/results?search_query=" + encodeURIComponent(q), true);
+            result = "I could not find the song automatically. A button to search it on YouTube is on screen. Tell the user in one short sentence.";
+          }
+        }
+      }else if(c.name === "stop_song"){
+        removeSong(true);
+        result = "The song is stopped. Tell the user in one short sentence.";
+      }else if(c.name === "guest_mode"){
+        setGuest(!!a.on, Number(a.minutes) || 5);
+        result = a.on ? "Guest mode is on. Other voices may talk to you for a few minutes. Say one short line to the guest." : "Guest mode is off. Only the owner's voice is heard now. Say one short line.";
+      }else if(c.name === "shutdown_app"){
+        armPost("shutdown", 15000);
+        result = "Say one short goodbye in Hindi, one sentence. The app closes right after you finish.";
+      }else if(c.name === "delete_memory"){
+        if(!store.get("memCodeHash", "")){
+          result = "No secret code is set, so memory cannot be deleted. Tell the user in one short sentence to set a secret code in Settings first.";
+        }else if(codeFails >= 3){
+          result = "Memory deletion is locked after wrong codes until the app restarts. Tell the user gently in one short sentence.";
+        }else{
+          addCodeCard();
+          result = "A box is on the user's screen where they type the secret code themselves. You do not know the code and must never ask them to say it. Tell them in one short sentence to type it in the box. The app will tell you the result.";
+        }
       }else{
         result = "Unknown tool.";
       }
@@ -739,7 +950,7 @@ async function handleToolCalls(calls){
     }
     return { id: c.id, name: c.name, response: { result } };
   }));
-  if(ready) setStatus("Listening... go ahead");
+  if(ready && !songMuted) setStatus("Listening... go ahead");
   send({ toolResponse: { functionResponses: responses } });
 }
 
@@ -757,6 +968,7 @@ function playPcm(b64){
   src.buffer = buf; src.connect(playCtx.destination);
   const t = Math.max(playCtx.currentTime + 0.02, nextT);
   src.start(t); nextT = t + buf.duration;
+  if(postTurn) postTurn.spoke = true;
   playing.add(src);
   lastAct = Date.now();
   src.onended = () => {
@@ -776,6 +988,148 @@ function b64FromInt16(i16){
   for(let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
   return btoa(s);
 }
+
+/* ---------- voice lock (speaker verification, on-device) ---------- */
+const SPK = { model: null, state: "idle", queue: [], pre: [], win: [], sil: 0, guestUntil: 0, left: new Float32Array(0), newF: 0 };
+try{ SPK.model = JSON.parse(store.get("spkModel", "null")); }catch(e){}
+const SPK_N = 26, SPK_FFT = 512;
+const spkWin = Float32Array.from({ length: 400 }, (_, i) => 0.54 - 0.46 * Math.cos(2 * Math.PI * i / 399));
+const spkMel = (() => {
+  const hz2m = f => 2595 * Math.log10(1 + f / 700), m2hz = m => 700 * (Math.pow(10, m / 2595) - 1);
+  const lo = hz2m(100), hi = hz2m(7000), pts = [];
+  for(let i = 0; i < SPK_N + 2; i++) pts.push(Math.floor((SPK_FFT + 1) * m2hz(lo + (hi - lo) * i / (SPK_N + 1)) / 16000));
+  return Array.from({ length: SPK_N }, (_, m) => ({ a: pts[m], b: pts[m + 1], c: pts[m + 2] }));
+})();
+const spkDct = Array.from({ length: 12 }, (_, k) => Float32Array.from({ length: SPK_N }, (_, n) => Math.cos(Math.PI * (k + 1) * (n + .5) / SPK_N)));
+function spkFFT(re, im){
+  const n = re.length;
+  for(let i = 1, j = 0; i < n; i++){ let b = n >> 1; for(; j & b; b >>= 1) j ^= b; j ^= b; if(i < j){ [re[i], re[j]] = [re[j], re[i]]; [im[i], im[j]] = [im[j], im[i]]; } }
+  for(let len = 2; len <= n; len <<= 1){
+    const ang = -2 * Math.PI / len, wr = Math.cos(ang), wi = Math.sin(ang);
+    for(let i = 0; i < n; i += len){
+      let cr = 1, ci = 0;
+      for(let k = 0; k < len / 2; k++){
+        const a = i + k, b = a + len / 2, tr = re[b] * cr - im[b] * ci, ti = re[b] * ci + im[b] * cr;
+        re[b] = re[a] - tr; im[b] = im[a] - ti; re[a] += tr; im[a] += ti;
+        const t = cr * wr - ci * wi; ci = cr * wi + ci * wr; cr = t;
+      }
+    }
+  }
+}
+// one 25 ms frame (Float32, 400 samples) -> 13-dim vector (12 MFCC + log pitch or null) or null if unvoiced/quiet
+function spkFrame(x){
+  let e = 0; for(let i = 0; i < 400; i++) e += x[i] * x[i];
+  if(Math.sqrt(e / 400) < 0.012) return null;
+  const re = new Float32Array(SPK_FFT), im = new Float32Array(SPK_FFT);
+  for(let i = 0; i < 400; i++) re[i] = (x[i] - (i ? .97 * x[i - 1] : 0)) * spkWin[i];
+  spkFFT(re, im);
+  const ps = new Float32Array(SPK_FFT / 2 + 1); for(let i = 0; i < ps.length; i++) ps[i] = re[i] * re[i] + im[i] * im[i];
+  const le = spkMel.map(f => { let s = 0; for(let k = f.a; k < f.c; k++) s += ps[k] * (k <= f.b ? (k - f.a) / Math.max(1, f.b - f.a) : (f.c - k) / Math.max(1, f.c - f.b)); return Math.log(s + 1e-9); });
+  const v = spkDct.map(row => { let s = 0; for(let n = 0; n < SPK_N; n++) s += row[n] * le[n]; return s / SPK_N; });
+  let bestL = 0, best = 0;
+  for(let L = 40; L < 267; L++){ let r = 0; for(let i = 0; i + L < 400; i++) r += x[i] * x[i + L]; if(r > best){ best = r; bestL = L; } }
+  v.push(best / e > 0.4 ? Math.log(16000 / bestL) : null);
+  return v;
+}
+function spkVec(frames){
+  const m = new Array(13).fill(0), c = new Array(13).fill(0);
+  for(const f of frames) for(let d = 0; d < 13; d++) if(f[d] !== null){ m[d] += f[d]; c[d]++; }
+  return m.map((s, d) => c[d] >= 5 ? s / c[d] : null);
+}
+function spkFeed(i16){ // appends frames for this chunk, returns voiced frame vectors
+  const x = new Float32Array(SPK.left.length + i16.length); x.set(SPK.left); for(let i = 0; i < i16.length; i++) x[SPK.left.length + i] = i16[i] / 32768;
+  const out = []; let p = 0;
+  while(p + 400 <= x.length){ const f = spkFrame(x.subarray(p, p + 400)); if(f) out.push(f); p += 160; }
+  SPK.left = x.slice(p); return out;
+}
+function spkScore(frames){ // lower = closer to the enrolled voice
+  const M = SPK.model; if(!M) return 0;
+  const v = spkVec(frames); let s = 0, n = 0;
+  for(let d = 0; d < 13; d++) if(v[d] !== null && M.mu[d] !== null){ const z = (v[d] - M.mu[d]) / M.sd[d]; s += z * z; n++; }
+  return n ? Math.sqrt(s / n) : 99;
+}
+function spkThresh(){ return [1.6, 1.9, 2.2, 2.6, 3.1][cfg.spkSens() - 1] || 2.2; }
+function spkActive(){ return cfg.spkOn() === "1" && SPK.model && !(SPK.guestUntil > Date.now()); }
+const zeros = n => new Int16Array(n);
+function spkGate(out){ // returns list of Int16Array chunks to send
+  const ms = out.length / 16, frames = spkFeed(out);
+  let rms = 0; for(let i = 0; i < out.length; i++) rms += out[i] * out[i]; rms = Math.sqrt(rms / out.length) / 32768;
+  const voiced = frames.length > 0 || rms > 0.02;
+  if(voiced){ SPK.sil = 0; SPK.win.push(...frames); SPK.newF += frames.length; if(SPK.win.length > 120) SPK.win.splice(0, SPK.win.length - 120); } else SPK.sil += ms;
+  const T = spkThresh(), decide = lim => SPK.win.length >= 15 && spkScore(SPK.win) < lim;
+  if(SPK.state === "idle"){
+    if(!voiced){ SPK.pre.push(out); if(SPK.pre.length > 2) SPK.pre.shift(); return [zeros(out.length)]; }
+    SPK.state = "pending"; SPK.queue = SPK.pre.concat([out]); SPK.pre = []; SPK.win = frames.slice(); SPK.newF = 0; return [];
+  }
+  if(SPK.state === "pending"){
+    SPK.queue.push(out);
+    if(SPK.win.length >= 40 || (!voiced && SPK.sil > 500)){
+      const q = SPK.queue; SPK.queue = [];
+      if(decide(T)){ SPK.state = "open"; SPK.newF = 0; return q; }
+      SPK.state = "blocked"; return q.map(c => zeros(c.length));
+    }
+    return [];
+  }
+  if(SPK.state === "open"){
+    if(SPK.newF >= 60){ SPK.newF = 0; if(!decide(T * 1.3)){ SPK.state = "blocked"; return [zeros(out.length)]; } }
+    if(SPK.sil > 1500){ SPK.state = "idle"; SPK.win = []; }
+    return [out];
+  }
+  if(SPK.sil > 800){ SPK.state = "idle"; SPK.win = []; }
+  return [zeros(out.length)];
+}
+// enrolment / test, own mic stream
+let spkRec = null;
+async function spkRecord(mode){
+  if(spkRec) return;
+  const note = $("spkNote");
+  const st = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 } });
+  const ac = new (window.AudioContext || window.webkitAudioContext)(), src = ac.createMediaStreamSource(st), pr = ac.createScriptProcessor(4096, 1, 1), g = ac.createGain(); g.gain.value = 0;
+  const ratio = ac.sampleRate / 16000; let all = [], left = new Float32Array(0), t0 = Date.now(), segs = [], cur = [];
+  const saveOld = SPK.left; SPK.left = new Float32Array(0); const win = []; let hold = 0;
+  pr.onaudioprocess = e => {
+    const inp = e.inputBuffer.getChannelData(0), n = Math.floor(inp.length / ratio), o = new Int16Array(n);
+    for(let i = 0; i < n; i++){ const a = Math.floor(i * ratio), b = Math.min(inp.length, Math.floor((i + 1) * ratio)); let sm = 0; for(let j = a; j < b; j++) sm += inp[j]; o[i] = Math.max(-1, Math.min(1, sm / Math.max(1, b - a))) * 32767; }
+    const fr = spkFeed(o);
+    if(mode === "enroll"){
+      for(const f of fr){ cur.push(f); all.push(f); if(cur.length === 50){ segs.push(spkVec(cur)); cur = []; } }
+      const sec = all.length / 100; note.textContent = "Bolte rahiye... " + sec.toFixed(0) + " / 15 sec (kuch bhi baat karo, Hindi mein kahani ya din ki baatein)";
+      if(sec >= 15) fin();
+    }else{
+      win.push(...fr); if(win.length > 80) win.splice(0, win.length - 80);
+      if(win.length >= 20){ const d = spkScore(win); note.textContent = "Match score " + d.toFixed(2) + " (limit " + spkThresh().toFixed(1) + ") -> " + (d < spkThresh() ? "AAPKI AWAAZ: allowed" : "dusri awaaz: blocked"); }
+      else note.textContent = "Bolo... (10 sec test)";
+      if(Date.now() - t0 > 10000) fin();
+    }
+  };
+  src.connect(pr); pr.connect(g); g.connect(ac.destination);
+  function fin(){
+    try{ pr.disconnect(); src.disconnect(); st.getTracks().forEach(t => t.stop()); ac.close(); }catch(e){}
+    spkRec = null; SPK.left = saveOld; $("spkEnroll").textContent = "Record my voice"; $("spkTest").textContent = "Test lock";
+    if(mode === "enroll"){
+      const ok = segs.filter(s => s.filter(v => v !== null).length >= 10);
+      if(ok.length < 8){ note.textContent = "Awaaz kam mili. Shaant jagah par, thoda zor se bolkar dobara record karo."; return; }
+      const mu = [], sd = [];
+      for(let d = 0; d < 13; d++){ const vs = ok.map(s => s[d]).filter(v => v !== null); if(vs.length < 6){ mu.push(null); sd.push(1); continue; } const m = vs.reduce((a, b) => a + b, 0) / vs.length; mu.push(m); sd.push(Math.sqrt(vs.reduce((a, b) => a + (b - m) * (b - m), 0) / vs.length)); }
+      const ref = sd.slice(0, 12).reduce((a, b) => a + b, 0) / 12;
+      SPK.model = { mu, sd: sd.map(v => Math.sqrt(v * v + (0.4 * ref) ** 2) * 1.25) }; store.set("spkModel", JSON.stringify(SPK.model));
+      note.textContent = "Voice record ho gayi. 'Test lock' dabake khud aur kisi dusre se check karo; zaroorat ho to Sensitivity badlo, phir Save.";
+    }
+  }
+  spkRec = { stop: fin };
+  $(mode === "enroll" ? "spkEnroll" : "spkTest").textContent = "Stop";
+}
+function spkNoteInit(){ $("spkNote").textContent = SPK.model ? "Aapki awaaz saved hai." : "Abhi koi awaaz saved nahi hai. 'Record my voice' dabao."; $("spkSensV").textContent = ["bahut strict", "strict", "normal", "lenient", "bahut lenient"][cfg.spkSens() - 1]; }
+$("spkEnroll").onclick = () => spkRec ? spkRec.stop() : spkRecord("enroll").catch(e => { $("spkNote").textContent = "Mic error: " + e.message; });
+$("spkTest").onclick = () => { if(spkRec) return spkRec.stop(); if(!SPK.model){ $("spkNote").textContent = "Pehle apni awaaz record karo."; return; } spkRecord("test").catch(e => { $("spkNote").textContent = "Mic error: " + e.message; }); };
+$("spkClear").onclick = () => { SPK.model = null; store.set("spkModel", "null"); spkNoteInit(); };
+$("spkSens").oninput = () => { store.set("spkSens", $("spkSens").value); spkNoteInit(); };
+function setGuest(on, min){
+  SPK.guestUntil = on ? Date.now() + Math.min(15, Math.max(1, min || 5)) * 60000 : 0; SPK.state = "idle"; SPK.win = []; SPK.queue = [];
+  setStatus(on ? "Guest mode on: sabki awaaz chalegi" : "Guest mode off: sirf aapki awaaz");
+}
+setInterval(() => { if(SPK.guestUntil && SPK.guestUntil <= Date.now()){ SPK.guestUntil = 0; if(running) setStatus("Guest mode khatam: sirf aapki awaaz"); } }, 2000);
+
 async function startMic(){
   micStream = await navigator.mediaDevices.getUserMedia({
     audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 }
@@ -796,7 +1150,8 @@ async function startMic(){
       const v = Math.max(-1, Math.min(1, sum / Math.max(1, b - a)));
       out[i] = v < 0 ? v * 0x8000 : v * 0x7fff;
     }
-    send({ realtimeInput: { audio: { data: b64FromInt16(out), mimeType: "audio/pcm;rate=16000" } } });
+    const chunks = spkActive() ? spkGate(out) : [out];
+    for(const c of chunks) send({ realtimeInput: { audio: { data: b64FromInt16(c), mimeType: "audio/pcm;rate=16000" } } });
   };
   const mute = micCtx.createGain(); mute.gain.value = 0;
   micSrc.connect(proc); proc.connect(mute); mute.connect(micCtx.destination);
@@ -834,6 +1189,8 @@ async function start(){
   mood = MOODS[Math.floor(Math.random() * MOODS.length)];
   sessionStart = Date.now(); greeted = false; topicN = Math.floor(Math.random() * TOPICS.length);
   running = true; resumeHandle = null; retries = 0; lines = []; savedIdx = 0; nudgeN = 0;
+  postTurn = null; skipSave = false; codeFails = 0; songMuted = false;
+  SPK.state = "idle"; SPK.win = []; SPK.queue = []; SPK.pre = []; SPK.guestUntil = 0; SPK.left = new Float32Array(0);
   $("log").innerHTML = "";
   loadMemory();
   setStatus("Connecting..."); setOrb("connecting");
@@ -861,7 +1218,8 @@ function stop(msg){
   try{ if(ws) ws.close(); }catch(e){}
   ws = null;
   clearInterval(nudgeTimer); nudgeTimer = null;
-  stopPlayback(); stopCam();
+  postTurn = null;
+  stopPlayback(); stopCam(); removeSongEl(); songMuted = false; removeCodeCard();
   try{ if(proc) proc.disconnect(); if(micSrc) micSrc.disconnect(); }catch(e){}
   if(micStream){ micStream.getTracks().forEach(t => t.stop()); micStream = null; }
   try{ if(micCtx) micCtx.close(); }catch(e){}
@@ -888,7 +1246,7 @@ function fail(msg){
 /* ---------- controls ---------- */
 $("startBtn").onclick = () => running ? stop() : start();
 $("micBtn").onclick = () => {
-  micOn = !micOn; toggleBtn($("micBtn"), micOn);
+  micOn = !micOn; songMuted = false; toggleBtn($("micBtn"), micOn);
   if(!micOn) send({ realtimeInput: { audioStreamEnd: true } });
   setStatus(micOn ? "Listening... go ahead" : "Mic is off");
 };
@@ -914,11 +1272,26 @@ function openSettings(){
   $("key").value = cfg.key(); $("userName").value = cfg.user(); $("aiName").value = cfg.name();
   $("voice").value = cfg.voice(); $("contacts").value = cfg.contacts(); $("cc").value = cfg.cc(); $("model").value = cfg.model(); $("imgModel").value = cfg.imgModel(); $("imgSource").value = cfg.imgSource(); $("searchOn").value = cfg.search(); $("persona").value = cfg.persona();
   $("clearMem").textContent = "Clear memory";
+  $("ytKey").value = cfg.ytKey(); $("memCode").value = "";
+  $("codeNote").textContent = store.get("memCodeHash", "") ? "A secret code is set." : "No code set yet. Until you set one, she cannot delete her memory.";
   $("bornNote").textContent = "Her birthday: " + (cfg.born() ? fmtDate(new Date(cfg.born() + "T00:00:00")) : "set when you first tap Start") + ". She treats the day you first switched her on as her birthday.";
+  $("spkOn").value = cfg.spkOn(); $("spkSens").value = cfg.spkSens(); spkNoteInit();
   $("settings").classList.add("open");
 }
 $("openSettings").onclick = openSettings;
-$("saveSettings").onclick = () => {
+$("saveSettings").onclick = async () => {
+  store.set("ytKey", $("ytKey").value.trim());
+  const newCode = $("memCode").value.trim();
+  if(newCode){
+    const cur = store.get("memCodeHash", "");
+    let allowed = true;
+    if(cur){
+      const old = prompt("Enter your current secret code to change it:");
+      allowed = old !== null && (await hashCode(old)) === cur;
+      if(!allowed) alert("Wrong current code. The secret code was not changed.");
+    }
+    if(allowed) store.set("memCodeHash", await hashCode(newCode));
+  }
   store.set("key", $("key").value.trim());
   store.set("userName", $("userName").value.trim());
   store.set("aiName", $("aiName").value.trim() || "Maria");
@@ -929,13 +1302,22 @@ $("saveSettings").onclick = () => {
   store.set("imgModel", $("imgModel").value.trim() || "gemini-3.1-flash-image");
   store.set("imgSource", $("imgSource").value);
   store.set("search", $("searchOn").value);
+  store.set("spkOn", $("spkOn").value);
+  if($("spkOn").value === "1" && !SPK.model) alert("Voice lock On hai lekin awaaz record nahi hui, isliye abhi kaam nahi karega.");
   store.set("persona4", $("persona").value.trim() || DEFAULT_PERSONA);
   store.set("level", "0"); workingLevel = 0;
   $("title").textContent = cfg.name();
   $("settings").classList.remove("open");
   if(running) setStatus("Changes apply from the next conversation.");
 };
-$("clearMem").onclick = () => { store.set("memory", "[]"); memory = []; $("clearMem").textContent = "Cleared"; };
+$("clearMem").onclick = async () => {
+  const cur = store.get("memCodeHash", "");
+  if(cur){
+    const c = prompt("Enter your secret code to clear memory:");
+    if(c === null || (await hashCode(c)) !== cur){ $("clearMem").textContent = "Wrong code"; return; }
+  }
+  store.set("memory", "[]"); memory = []; $("clearMem").textContent = "Cleared"; updateNodes();
+};
 $("resetBorn").onclick = () => { store.set("born", todayISO()); $("bornNote").textContent = "Her birthday is now today, " + fmtDate(new Date()) + "."; };
 $("resetPersona").onclick = () => { $("persona").value = DEFAULT_PERSONA; };
 
