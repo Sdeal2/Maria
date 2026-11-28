@@ -124,15 +124,15 @@ header h1{font-size:18px;font-weight:600;margin:0;letter-spacing:.04em}
 button:focus-visible,select:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid var(--glow);outline-offset:2px}
 
 #log{
-  flex:1 1 auto;overflow-y:auto;margin:2px 0 10px;padding:10px;border-radius:16px;
+  flex:0 1 auto;height:34vh;max-height:34vh;overflow-y:auto;margin:2px 0 10px;padding:10px;border-radius:16px;
   background:rgba(13,34,48,.6);border:1px solid var(--line);
   display:flex;flex-direction:column;gap:8px;min-height:90px;
 }
-.b{max-width:86%;padding:8px 12px;border-radius:14px;font-size:15px;line-height:1.5;white-space:pre-wrap}
+.b{max-width:86%;padding:6px 10px;border-radius:12px;font-size:13px;line-height:1.4;white-space:pre-wrap}
 .b.user{align-self:flex-end;background:#12394b}
 .b.err{border-color:var(--warn);color:#ffb3ba;background:#2a1217}
 .b.ai{align-self:flex-start;background:#0f2a24;border:1px solid #1c5a50}
-.act{align-self:stretch;border:1px solid var(--glow);border-radius:14px;padding:10px 12px;background:#0b2b2c;display:flex;flex-direction:column;gap:8px;font-size:15px;line-height:1.5;white-space:pre-wrap}
+.act{align-self:stretch;border:1px solid var(--glow);border-radius:14px;padding:10px 12px;background:#0b2b2c;display:flex;flex-direction:column;gap:6px;font-size:13px;line-height:1.4;white-space:pre-wrap}
 .pic img{width:100%;border-radius:10px;display:block}
 .actbtn{display:block;text-align:center;background:var(--glow);color:#032a2a;font-weight:700;border-radius:12px;padding:12px;text-decoration:none}
 .empty{color:var(--dim);font-size:14px;text-align:center;margin:auto}
@@ -154,7 +154,8 @@ button:focus-visible,select:focus-visible,input:focus-visible,textarea:focus-vis
 .sheet button{border-radius:12px;border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:12px;font-size:15px;font-family:inherit}
 .sheet button.primary{background:var(--glow);color:#032a2a;border-color:var(--glow);font-weight:700}
 .note{font-size:13px;color:var(--dim);line-height:1.5;margin:0}
-.player iframe{width:100%;aspect-ratio:16/9;border:0;border-radius:10px;background:#000}
+.player.audio iframe{width:100%;aspect-ratio:auto;height:56px}
+.player iframe{width:42%;min-width:150px;align-self:center;aspect-ratio:16/9;border:0;border-radius:10px;background:#000}
 .act input{background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:12px;padding:12px;font-size:16px;font-family:inherit;width:100%}
 .act .row2{display:flex;gap:8px}
 .act .row2 button{flex:1;border-radius:12px;border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:12px;font-size:15px;font-family:inherit}
@@ -817,6 +818,9 @@ function addSong(v){
   const a = document.createElement("a"); a.className = "actbtn"; a.textContent = "Open in YouTube";
   a.href = "https://www.youtube.com/watch?v=" + v.id; a.target = "_blank"; a.rel = "noopener"; box.appendChild(a);
   const row = document.createElement("div"); row.className = "row2";
+  const m = document.createElement("button"); m.textContent = "Audio only";
+  m.onclick = () => { const au = box.classList.toggle("audio"); m.textContent = au ? "Show video" : "Audio only"; };
+  row.appendChild(m);
   const x = document.createElement("button"); x.textContent = "Stop song"; x.onclick = () => removeSong(true);
   row.appendChild(x); box.appendChild(row);
   $("log").appendChild(box); $("log").scrollTop = $("log").scrollHeight;
@@ -917,7 +921,7 @@ async function handleToolCalls(calls){
           const v = await findVideo(q);
           if(v && /^[\w-]{11}$/.test(v.id)){
             addSong(v);
-            result = "The song is now playing on screen. Say one very short sentence, then stay quiet. The microphone is muted while the song plays and the user taps the mic to talk again.";
+            result = "The song is now playing on screen as a small player. Say one very short sentence and mention that the user can tap the Audio only button to hear it like an MP3 or the Show video button to watch it, then stay quiet. The microphone is muted while the song plays and the user taps the mic to talk again.";
           }else{
             addAction("Song: " + q, "Search on YouTube", "https://www.youtube.com/results?search_query=" + encodeURIComponent(q), true);
             result = "I could not find the song automatically. A button to search it on YouTube is on screen. Tell the user in one short sentence.";
@@ -992,6 +996,7 @@ function b64FromInt16(i16){
 /* ---------- voice lock (speaker verification, on-device) ---------- */
 const SPK = { model: null, state: "idle", queue: [], pre: [], win: [], sil: 0, guestUntil: 0, left: new Float32Array(0), newF: 0 };
 try{ SPK.model = JSON.parse(store.get("spkModel", "null")); }catch(e){}
+if(SPK.model && SPK.model.v !== 2) SPK.model = null;
 const SPK_N = 26, SPK_FFT = 512;
 const spkWin = Float32Array.from({ length: 400 }, (_, i) => 0.54 - 0.46 * Math.cos(2 * Math.PI * i / 399));
 const spkMel = (() => {
@@ -1048,7 +1053,7 @@ function spkScore(frames){ // lower = closer to the enrolled voice
   for(let d = 0; d < 13; d++) if(v[d] !== null && M.mu[d] !== null){ const z = (v[d] - M.mu[d]) / M.sd[d]; s += z * z; n++; }
   return n ? Math.sqrt(s / n) : 99;
 }
-function spkThresh(){ return [1.6, 1.9, 2.2, 2.6, 3.1][cfg.spkSens() - 1] || 2.2; }
+function spkThresh(){ return [0.6, 0.75, 0.9, 1.1, 1.4][cfg.spkSens() - 1] || 0.9; }
 function spkActive(){ return cfg.spkOn() === "1" && SPK.model && !(SPK.guestUntil > Date.now()); }
 const zeros = n => new Int16Array(n);
 function spkGate(out){ // returns list of Int16Array chunks to send
@@ -1110,9 +1115,14 @@ async function spkRecord(mode){
       const ok = segs.filter(s => s.filter(v => v !== null).length >= 10);
       if(ok.length < 8){ note.textContent = "Awaaz kam mili. Shaant jagah par, thoda zor se bolkar dobara record karo."; return; }
       const mu = [], sd = [];
-      for(let d = 0; d < 13; d++){ const vs = ok.map(s => s[d]).filter(v => v !== null); if(vs.length < 6){ mu.push(null); sd.push(1); continue; } const m = vs.reduce((a, b) => a + b, 0) / vs.length; mu.push(m); sd.push(Math.sqrt(vs.reduce((a, b) => a + (b - m) * (b - m), 0) / vs.length)); }
-      const ref = sd.slice(0, 12).reduce((a, b) => a + b, 0) / 12;
-      SPK.model = { mu, sd: sd.map(v => Math.sqrt(v * v + (0.4 * ref) ** 2) * 1.25) }; store.set("spkModel", JSON.stringify(SPK.model));
+      for(let d = 0; d < 13; d++){
+        const vs = ok.map(x => x[d]).filter(v => v !== null), fv = all.map(f => f[d]).filter(v => v !== null);
+        if(vs.length < 6 || fv.length < 100){ mu.push(null); sd.push(1); continue; }
+        mu.push(vs.reduce((p, q) => p + q, 0) / vs.length);
+        const fm = fv.reduce((p, q) => p + q, 0) / fv.length;
+        sd.push(Math.sqrt(fv.reduce((p, q) => p + (q - fm) * (q - fm), 0) / fv.length));
+      }
+      SPK.model = { v: 2, mu, sd }; store.set("spkModel", JSON.stringify(SPK.model));
       note.textContent = "Voice record ho gayi. 'Test lock' dabake khud aur kisi dusre se check karo; zaroorat ho to Sensitivity badlo, phir Save.";
     }
   }
